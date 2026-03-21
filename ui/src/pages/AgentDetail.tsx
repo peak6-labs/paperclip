@@ -2494,10 +2494,34 @@ function AgentSkillsTab({
         }),
     [companySkillByKey, skillSnapshot],
   );
+  const isOpenClawGateway = agent.adapterType === "openclaw_gateway";
+  const gatewaySkillRows = useMemo<SkillRow[]>(
+    () =>
+      !isOpenClawGateway
+        ? []
+        : (skillSnapshot?.entries ?? [])
+            .filter((entry) => !companySkillKeys.has(entry.key) && entry.origin === "user_installed")
+            .map((entry) => ({
+              id: `gateway:${entry.key}`,
+              key: entry.key,
+              name: entry.runtimeName ?? entry.key,
+              description: entry.detail ?? null,
+              detail: null,
+              locationLabel: entry.locationLabel ?? null,
+              originLabel: "OpenClaw gateway skill",
+              linkTo: null,
+              readOnly: false,
+              adapterEntry: entry,
+            })),
+    [companySkillKeys, isOpenClawGateway, skillSnapshot],
+  );
   const unmanagedSkillRows = useMemo<SkillRow[]>(
     () =>
       (skillSnapshot?.entries ?? [])
-        .filter((entry) => isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys))
+        .filter((entry) => {
+          if (isOpenClawGateway && entry.origin === "user_installed") return false;
+          return isReadOnlyUnmanagedSkillEntry(entry, companySkillKeys);
+        })
         .map((entry) => ({
           id: `external:${entry.key}`,
           key: entry.key,
@@ -2510,10 +2534,14 @@ function AgentSkillsTab({
           readOnly: true,
           adapterEntry: entry,
         })),
-    [companySkillKeys, skillSnapshot],
+    [companySkillKeys, isOpenClawGateway, skillSnapshot],
   );
   const desiredOnlyMissingSkills = useMemo(
-    () => skillDraft.filter((key) => !companySkillByKey.has(key)),
+    () => skillDraft.filter((key) => {
+      // External gateway skills (e.g. "openclaw/bird") are not in the company library — that's expected
+      if (key.includes("/") && !key.startsWith("paperclipai/")) return false;
+      return !companySkillByKey.has(key);
+    }),
     [companySkillByKey, skillDraft],
   );
   const skillApplicationLabel = useMemo(() => {
@@ -2669,7 +2697,7 @@ function AgentSkillsTab({
               );
             };
 
-            if (optionalSkillRows.length === 0 && requiredSkillRows.length === 0 && unmanagedSkillRows.length === 0) {
+            if (optionalSkillRows.length === 0 && requiredSkillRows.length === 0 && unmanagedSkillRows.length === 0 && gatewaySkillRows.length === 0) {
               return (
                 <section className="border-y border-border">
                   <div className="px-3 py-6 text-sm text-muted-foreground">
@@ -2695,6 +2723,17 @@ function AgentSkillsTab({
                       </span>
                     </div>
                     {requiredSkillRows.map(renderSkillRow)}
+                  </section>
+                )}
+
+                {gatewaySkillRows.length > 0 && (
+                  <section className="border-y border-border">
+                    <div className="border-b border-border bg-muted/40 px-3 py-2">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        OpenClaw gateway skills (prompt-enforced per session)
+                      </span>
+                    </div>
+                    {gatewaySkillRows.map(renderSkillRow)}
                   </section>
                 )}
 
