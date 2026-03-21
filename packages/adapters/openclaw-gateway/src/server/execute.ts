@@ -3,11 +3,13 @@ import type {
   AdapterExecutionResult,
   AdapterRuntimeServiceReport,
 } from "@paperclipai/adapter-utils";
-import { asNumber, asString, buildPaperclipEnv, parseObject } from "@paperclipai/adapter-utils/server-utils";
+import { asNumber, asString, buildPaperclipEnv, parseObject, renderTemplate } from "@paperclipai/adapter-utils/server-utils";
 import crypto, { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import { WebSocket } from "ws";
 
-type SessionKeyStrategy = "fixed" | "issue" | "run";
+type SessionKeyStrategy = "fixed" | "issue" | "project" | "run";
 
 type WakePayload = {
   runId: string;
@@ -121,9 +123,9 @@ function parseBoolean(value: unknown, fallback = false): boolean {
 }
 
 function normalizeSessionKeyStrategy(value: unknown): SessionKeyStrategy {
-  const normalized = asString(value, "issue").trim().toLowerCase();
-  if (normalized === "fixed" || normalized === "run") return normalized;
-  return "issue";
+  const normalized = asString(value, "project").trim().toLowerCase();
+  if (normalized === "fixed" || normalized === "issue" || normalized === "run") return normalized;
+  return "project";
 }
 
 function resolveSessionKey(input: {
@@ -131,12 +133,146 @@ function resolveSessionKey(input: {
   configuredSessionKey: string | null;
   runId: string;
   issueId: string | null;
+  projectId: string | null;
+  agentId: string | null;
 }): string {
-  const fallback = input.configuredSessionKey ?? "paperclip";
-  if (input.strategy === "run") return `paperclip:run:${input.runId}`;
-  if (input.strategy === "issue" && input.issueId) return `paperclip:issue:${input.issueId}`;
-  return fallback;
+  const prefix = input.agentId ? `paperclip:${input.agentId}` : "paperclip";
+  if (input.strategy === "fixed") return input.configuredSessionKey ?? prefix;
+  if (input.strategy === "run") return `${prefix}:run:${input.runId}`;
+  if (input.strategy === "issue" && input.issueId) return `${prefix}:issue:${input.issueId}`;
+  if (input.strategy === "project" && input.projectId) return `${prefix}:project:${input.projectId}`;
+  // Fallback: if strategy is project but no projectId available, fall back to agent-level session
+  return input.configuredSessionKey ?? prefix;
 }
+
+/** Read the bundled Paperclip skill and prepend a runtime-injection header. */
+function loadPaperclipSkill(): string | null {
+  // Resolve from cwd (server root) — __dirname is not available in ESM
+  const candidates = [
+    path.resolve(process.cwd(), "skills/paperclip/SKILL.md"),
+    path.resolve(process.cwd(), "../skills/paperclip/SKILL.md"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const content = fs.readFileSync(candidate, "utf-8");
+      if (content.length > 100) return content;
+    } catch { /* continue */ }
+  }
+  return null;
+}
+
+let _cachedSkill: string | null | undefined;
+let _cachedSkillHash: string | null = null;
+
+const SKILL_MARKER_PREFIX = "<!-- PAPERCLIP_SKILL_v";
+const SKILL_MARKER_SUFFIX = " -->";
+
+function getSkillHash(): string {
+  if (_cachedSkillHash) return _cachedSkillHash;
+  const raw = loadPaperclipSkill();
+  if (!raw) return "none";
+  _cachedSkillHash = crypto.createHash("md5").update(raw).digest("hex").slice(0, 8);
+  return _cachedSkillHash;
+}
+
+function getSkillMarker(): string {
+  return `${SKILL_MARKER_PREFIX}${getSkillHash()}${SKILL_MARKER_SUFFIX}`;
+}
+
+function getPaperclipSkillText(): string {
+  if (_cachedSkill === undefined) {
+    _cachedSkill = loadPaperclipSkill();
+  }
+  if (!_cachedSkill) return "";
+  return [
+    getSkillMarker(),
+    "<!-- Injected by Paperclip OpenClaw adapter at runtime -->",
+    "<!-- IMPORTANT: This skill supersedes any locally installed paperclip skill. -->",
+    "<!-- If skills/paperclip/SKILL.md exists on the agent filesystem, IGNORE it. Use this version instead. -->",
+    "<!-- DO NOT REMOVE OR SUMMARIZE THIS SKILL BLOCK DURING COMPACTION. Preserve it verbatim. -->",
+    "<!-- /PAPERCLIP_SKILL -->",
+    "",
+    _cachedSkill,
+  ].join("\n");
+}
+
+const PROMPT_TEMPLATE_MARKER_PREFIX = "<!-- PROMPT_TEMPLATE_v";
+const PROMPT_TEMPLATE_MARKER_SUFFIX = " -->";
+
+function getPromptTemplateHash(text: string): string {
+  return crypto.createHash("md5").update(text).digest("hex").slice(0, 8);
+}
+
+function getPromptTemplateMarker(text: string): string {
+  return `${PROMPT_TEMPLATE_MARKER_PREFIX}${getPromptTemplateHash(text)}${PROMPT_TEMPLATE_MARKER_SUFFIX}`;
+}
+
+function buildPromptTemplateBlock(rendered: string): string {
+  const marker = getPromptTemplateMarker(rendered);
+  return [
+    marker,
+    "<!-- Agent prompt template injected by Paperclip OpenClaw adapter -->",
+    "<!-- DO NOT REMOVE OR SUMMARIZE DURING COMPACTION. Preserve verbatim. -->",
+    "",
+    rendered,
+  ].join("\n");
+}
+
+/**
+ * Check if the session already has messages (meaning the skill was likely injected before).
+ * Uses sessions.list with messageLimit to peek at recent messages for the skill marker.
+ * Falls back to "not injected" on any error — safe to always inject.
+ */
+type ChatHistoryResult = {
+  messages?: Array<{ role?: string; content?: string | Array<{ type?: string; text?: string }> }>;
+};
+
+/** Search session history for one or more markers. Returns a Set of found markers. */
+async function findMarkersInHistory(
+  client: { safeRequest: <T>(method: string, params: unknown, opts: { timeoutMs: number }) => Promise<T | null> },
+  sessionKey: string,
+  markers: string[],
+  onLog: (stream: "stdout" | "stderr", text: string) => Promise<void>,
+): Promise<Set<string>> {
+  const found = new Set<string>();
+  if (markers.length === 0) return found;
+  try {
+    const result = await client.safeRequest<ChatHistoryResult>(
+      "chat.history",
+      { sessionKey },
+      { timeoutMs: 15_000 },
+    );
+    const msgCount = result?.messages?.length ?? 0;
+    await onLog("stdout", `[openclaw-gateway] dedup: chat.history returned ${msgCount} messages, searching for ${markers.length} marker(s)\n`);
+    for (const msg of result?.messages ?? []) {
+      const content = msg.content;
+      const texts: string[] = [];
+      if (typeof content === "string") {
+        texts.push(content);
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (typeof block === "object" && block && typeof (block as Record<string, unknown>).text === "string") {
+            texts.push((block as Record<string, unknown>).text as string);
+          }
+        }
+      }
+      for (const text of texts) {
+        for (const marker of markers) {
+          if (text.includes(marker)) found.add(marker);
+        }
+      }
+      if (found.size === markers.length) break; // All found, early exit
+    }
+    for (const marker of markers) {
+      await onLog("stdout", `[openclaw-gateway] dedup: ${marker} → ${found.has(marker) ? "FOUND" : "NOT FOUND"}\n`);
+    }
+  } catch (err) {
+    await onLog("stderr", `[openclaw-gateway] dedup error: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
+  return found;
+}
+
+
 
 function isLoopbackHost(hostname: string): boolean {
   const value = hostname.trim().toLowerCase();
@@ -335,7 +471,7 @@ function buildPaperclipEnvForWake(ctx: AdapterExecutionContext, wakePayload: Wak
   return paperclipEnv;
 }
 
-function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>): string {
+function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string>, authToken?: string): string {
   const claimedApiKeyPath = "~/.openclaw/workspace/paperclip-claimed-api-key.json";
   const orderedKeys = [
     "PAPERCLIP_RUN_ID",
@@ -367,9 +503,13 @@ function buildWakeText(payload: WakePayload, paperclipEnv: Record<string, string
     "",
     "Set these values in your run context:",
     ...envLines,
-    `PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`,
+    ...(authToken
+      ? [`PAPERCLIP_API_KEY=${authToken}`]
+      : [`PAPERCLIP_API_KEY=<token from ${claimedApiKeyPath}>`]),
     "",
-    `Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`,
+    ...(authToken
+      ? ["PAPERCLIP_API_KEY has been injected above — use it directly. ALWAYS use the key from THIS wake message; never reuse keys from prior runs. This key expires in 48 hours."]
+      : [`Load PAPERCLIP_API_KEY from ${claimedApiKeyPath} (the token you saved after claim-api-key).`]),
     "",
     `api_base=${apiBaseHint}`,
     `task_id=${payload.taskId ?? ""}`,
@@ -725,6 +865,17 @@ class GatewayWsClient {
     this.pending.clear();
   }
 
+  /** Make a request but swallow rejections if the WS closes before response arrives. */
+  async safeRequest<T>(method: string, params: unknown, opts: { timeoutMs: number }): Promise<T | null> {
+    try {
+      return await this.request<T>(method, params, opts);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      void this.opts.onLog("stderr", `[openclaw-gateway] safeRequest(${method}) failed: ${msg}\n`);
+      return null;
+    }
+  }
+
   private handleMessage(raw: string) {
     let parsed: unknown;
     try {
@@ -1026,12 +1177,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     };
   }
 
-  const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 120)));
+  const timeoutSec = Math.max(0, Math.floor(asNumber(ctx.config.timeoutSec, 600)));
   const timeoutMs = timeoutSec > 0 ? timeoutSec * 1000 : 0;
   const connectTimeoutMs = timeoutMs > 0 ? Math.min(timeoutMs, 15_000) : 10_000;
   const waitTimeoutMs = parseOptionalPositiveInteger(ctx.config.waitTimeoutMs) ?? (timeoutMs > 0 ? timeoutMs : 30_000);
 
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
+  const promptTemplateRaw = asString(ctx.config.promptTemplate, "").trim();
   const transportHint = nonEmpty(ctx.config.streamTransport) ?? nonEmpty(ctx.config.transport);
 
   const headers = toStringRecord(ctx.config.headers);
@@ -1053,32 +1205,47 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const wakePayload = buildWakePayload(ctx);
   const paperclipEnv = buildPaperclipEnvForWake(ctx, wakePayload);
-  const wakeText = buildWakeText(wakePayload, paperclipEnv);
+  const wakeText = buildWakeText(wakePayload, paperclipEnv, ctx.authToken);
 
-  const sessionKeyStrategy = normalizeSessionKeyStrategy(ctx.config.sessionKeyStrategy);
+  const sessionKeyStrategy = normalizeSessionKeyStrategy(
+    ctx.config.sessionKeyStrategy,
+  );
   const configuredSessionKey = nonEmpty(ctx.config.sessionKey);
+  const configuredAgentId = nonEmpty(ctx.config.agentId);
+  const contextProjectId = nonEmpty(ctx.context.projectId);
   const sessionKey = resolveSessionKey({
     strategy: sessionKeyStrategy,
     configuredSessionKey,
     runId: ctx.runId,
     issueId: wakePayload.issueId,
+    projectId: contextProjectId,
+    agentId: configuredAgentId,
   });
 
   const templateMessage = nonEmpty(payloadTemplate.message) ?? nonEmpty(payloadTemplate.text);
-  const message = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  const baseMessage = templateMessage ? appendWakeText(templateMessage, wakeText) : wakeText;
+  // Skill injection is deferred until after WS connect so we can check session history
   const paperclipPayload = buildStandardPaperclipPayload(ctx, wakePayload, paperclipEnv, payloadTemplate);
 
   const agentParams: Record<string, unknown> = {
     ...payloadTemplate,
-    message,
+    message: baseMessage,
     sessionKey,
     idempotencyKey: ctx.runId,
   };
   delete agentParams.text;
+  // Model override is applied via sessions.patch before the agent call
+  // (WS 'agent' method does not accept 'model' directly)
+  const modelOverride = nonEmpty(agentParams.model) ?? nonEmpty(ctx.config.model);
+  delete agentParams.model;
 
-  const configuredAgentId = nonEmpty(ctx.config.agentId);
   if (configuredAgentId && !nonEmpty(agentParams.agentId)) {
     agentParams.agentId = configuredAgentId;
+  }
+
+  const configuredThinking = nonEmpty(ctx.config.thinking);
+  if (configuredThinking && !nonEmpty(agentParams.thinking)) {
+    agentParams.thinking = configuredThinking;
   }
 
   if (typeof agentParams.timeout !== "number") {
@@ -1120,12 +1287,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const autoPairOnFirstConnect = parseBoolean(ctx.config.autoPairOnFirstConnect, true);
   let autoPairAttempted = false;
   let latestResultPayload: unknown = null;
+  const originalMessage = agentParams.message;
 
-  while (true) {
+  {
+    const RETRY_DELAYS_MS = [5_000, 30_000, 60_000, 150_000, 300_000];
+    const RETRYABLE_CODES = new Set([1006, 1011, 1012, 1013, 1014]);
+    let attemptNumber = 0;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+    attemptNumber++;
+    // Reset per-attempt state to avoid stale data from failed retries
     const trackedRunIds = new Set<string>([ctx.runId]);
     const assistantChunks: string[] = [];
     let lifecycleError: string | null = null;
     let deviceIdentity: GatewayDeviceIdentity | null = null;
+    agentParams.message = originalMessage;
 
     const onEvent = async (frame: GatewayEventFrame) => {
       if (frame.event !== "agent") {
@@ -1193,7 +1370,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await ctx.onLog("stdout", "[openclaw-gateway] device auth disabled\n");
       }
 
-      await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}\n`);
+      await ctx.onLog("stdout", `[openclaw-gateway] connecting to ${parsedUrl.toString()}${attemptNumber > 1 ? ` (attempt ${attemptNumber})` : ""}\n`);
 
       const hello = await client.connect((nonce) => {
         const signedAtMs = Date.now();
@@ -1247,6 +1424,61 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
+
+      // Build injection blocks: skill + prompt template (with hash-based dedup)
+      const skillText = getPaperclipSkillText();
+      const renderedPromptTemplate = promptTemplateRaw
+        ? renderTemplate(promptTemplateRaw, {
+            runId: ctx.runId,
+            company: { id: ctx.agent.companyId },
+            agent: ctx.agent,
+            run: { id: ctx.runId, source: "on_demand" },
+            context: ctx.context,
+          })
+        : "";
+      const promptTemplateBlock = renderedPromptTemplate ? buildPromptTemplateBlock(renderedPromptTemplate) : "";
+
+      // Collect markers to check in one history scan
+      const markersToCheck: string[] = [];
+      if (skillText) markersToCheck.push(getSkillMarker());
+      if (promptTemplateBlock) markersToCheck.push(getPromptTemplateMarker(renderedPromptTemplate));
+
+      const foundMarkers = markersToCheck.length > 0
+        ? await findMarkersInHistory(client, sessionKey, markersToCheck, ctx.onLog)
+        : new Set<string>();
+
+      // Inject skill if not already present
+      if (skillText) {
+        if (foundMarkers.has(getSkillMarker())) {
+          await ctx.onLog("stdout", `[openclaw-gateway] paperclip skill already in session (hash=${getSkillHash()}), skipping\n`);
+        } else {
+          agentParams.message = `${skillText}\n\n---\n\n${agentParams.message}`;
+          await ctx.onLog("stdout", `[openclaw-gateway] injecting paperclip skill (hash=${getSkillHash()}, ${skillText.length} chars)\n`);
+        }
+      }
+
+      // Inject prompt template if not already present
+      if (promptTemplateBlock) {
+        const ptMarker = getPromptTemplateMarker(renderedPromptTemplate);
+        if (foundMarkers.has(ptMarker)) {
+          await ctx.onLog("stdout", `[openclaw-gateway] prompt template already in session (hash=${getPromptTemplateHash(renderedPromptTemplate)}), skipping\n`);
+        } else {
+          agentParams.message = `${promptTemplateBlock}\n\n---\n\n${agentParams.message}`;
+          await ctx.onLog("stdout", `[openclaw-gateway] injecting prompt template (hash=${getPromptTemplateHash(renderedPromptTemplate)}, ${renderedPromptTemplate.length} chars)\n`);
+        }
+      }
+
+      // Apply model override via sessions.patch before sending the agent message
+      if (modelOverride) {
+        try {
+          await client.request("sessions.patch", { key: sessionKey, model: modelOverride }, {
+            timeoutMs: 5_000,
+          });
+          await ctx.onLog("stdout", `[openclaw-gateway] model override applied: ${modelOverride}\n`);
+        } catch (e) {
+          await ctx.onLog("stderr", `[openclaw-gateway] model override failed: ${e instanceof Error ? e.message : String(e)}\n`);
+        }
+      }
 
       const acceptedPayload = await client.request<Record<string, unknown>>("agent", agentParams, {
         timeoutMs: connectTimeoutMs,
@@ -1415,6 +1647,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
       await ctx.onLog("stderr", `[openclaw-gateway] request failed: ${detailedMessage}\n`);
 
+      // Retry on transient WS close codes (event loop pressure, proxy drops)
+      const wsCloseMatch = message.match(/gateway closed \((\d+)\)/);
+      const wsCloseCode = wsCloseMatch ? parseInt(wsCloseMatch[1], 10) : 0;
+      const isEconnReset = lower.includes("econnreset") || lower.includes("econnrefused");
+      const isRetryable = RETRYABLE_CODES.has(wsCloseCode) || isEconnReset || lower.includes("websocket open timeout");
+
+      if (isRetryable && attemptNumber <= RETRY_DELAYS_MS.length) {
+        const delayMs = RETRY_DELAYS_MS[attemptNumber - 1]!;
+        const jitterMs = Math.floor(Math.random() * Math.min(delayMs * 0.3, 5_000));
+        const totalDelayMs = delayMs + jitterMs;
+        await ctx.onLog(
+          "stdout",
+          `[openclaw-gateway] transient failure (code=${wsCloseCode || "none"}), retrying in ${Math.round(totalDelayMs / 1000)}s (attempt ${attemptNumber}/${RETRY_DELAYS_MS.length + 1})\n`,
+        );
+        client.close();
+        await new Promise((r) => setTimeout(r, totalDelayMs));
+        continue;
+      }
+
       return {
         exitCode: 1,
         signal: null,
@@ -1430,5 +1681,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     } finally {
       client.close();
     }
+    } // end while(true) retry loop
   }
 }

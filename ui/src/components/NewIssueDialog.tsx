@@ -70,6 +70,7 @@ interface IssueDraft {
   assigneeModelOverride: string;
   assigneeThinkingEffort: string;
   assigneeChrome: boolean;
+  assigneeSessionStrategy: string;
   executionWorkspaceMode?: string;
   selectedExecutionWorkspaceId?: string;
   useIsolatedExecutionWorkspace?: boolean;
@@ -83,7 +84,7 @@ type StagedIssueFile = {
   title?: string | null;
 };
 
-const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local"]);
+const ISSUE_OVERRIDE_ADAPTER_TYPES = new Set(["claude_local", "codex_local", "opencode_local", "openclaw_gateway"]);
 const STAGED_FILE_ACCEPT = "image/*,application/pdf,text/plain,text/markdown,application/json,text/csv,text/html,.md,.markdown";
 
 const ISSUE_THINKING_EFFORT_OPTIONS = {
@@ -110,6 +111,16 @@ const ISSUE_THINKING_EFFORT_OPTIONS = {
     { value: "xhigh", label: "X-High" },
     { value: "max", label: "Max" },
   ],
+  openclaw_gateway: [
+    { value: "", label: "Default" },
+    { value: "off", label: "Off" },
+    { value: "minimal", label: "Minimal" },
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+    { value: "adaptive", label: "Adaptive (Claude 4.6+)" },
+    { value: "xhigh", label: "Extra High (GPT-5.2+)" },
+  ],
 } as const;
 
 function buildAssigneeAdapterOverrides(input: {
@@ -117,6 +128,7 @@ function buildAssigneeAdapterOverrides(input: {
   modelOverride: string;
   thinkingEffortOverride: string;
   chrome: boolean;
+  sessionStrategy: string;
 }): Record<string, unknown> | null {
   const adapterType = input.adapterType ?? null;
   if (!adapterType || !ISSUE_OVERRIDE_ADAPTER_TYPES.has(adapterType)) {
@@ -132,12 +144,15 @@ function buildAssigneeAdapterOverrides(input: {
       adapterConfig.variant = input.thinkingEffortOverride;
     } else if (adapterType === "claude_local") {
       adapterConfig.effort = input.thinkingEffortOverride;
-    } else if (adapterType === "opencode_local") {
-      adapterConfig.variant = input.thinkingEffortOverride;
+    } else if (adapterType === "openclaw_gateway") {
+      adapterConfig.thinking = input.thinkingEffortOverride;
     }
   }
   if (adapterType === "claude_local" && input.chrome) {
     adapterConfig.chrome = true;
+  }
+  if (adapterType === "openclaw_gateway" && input.sessionStrategy) {
+    adapterConfig.sessionKeyStrategy = input.sessionStrategy;
   }
 
   const overrides: Record<string, unknown> = {};
@@ -285,6 +300,7 @@ export function NewIssueDialog() {
   const [assigneeModelOverride, setAssigneeModelOverride] = useState("");
   const [assigneeThinkingEffort, setAssigneeThinkingEffort] = useState("");
   const [assigneeChrome, setAssigneeChrome] = useState(false);
+  const [assigneeSessionStrategy, setAssigneeSessionStrategy] = useState("");
   const [executionWorkspaceMode, setExecutionWorkspaceMode] = useState<string>("shared_workspace");
   const [selectedExecutionWorkspaceId, setSelectedExecutionWorkspaceId] = useState("");
   const [expanded, setExpanded] = useState(false);
@@ -387,6 +403,8 @@ export function NewIssueDialog() {
     return options;
   }, [agents, orderedProjects]);
 
+  const isOpenClawAssignee = assigneeAdapterType === "openclaw_gateway";
+
   const { data: assigneeAdapterModels } = useQuery({
     queryKey:
       effectiveCompanyId && assigneeAdapterType
@@ -482,6 +500,7 @@ export function NewIssueDialog() {
       assigneeModelOverride,
       assigneeThinkingEffort,
       assigneeChrome,
+      assigneeSessionStrategy,
       executionWorkspaceMode,
       selectedExecutionWorkspaceId,
     });
@@ -496,6 +515,7 @@ export function NewIssueDialog() {
     assigneeModelOverride,
     assigneeThinkingEffort,
     assigneeChrome,
+    assigneeSessionStrategy,
     executionWorkspaceMode,
     selectedExecutionWorkspaceId,
     newIssueOpen,
@@ -522,6 +542,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
+      setAssigneeSessionStrategy("");
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
@@ -542,6 +563,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride(draft.assigneeModelOverride ?? "");
       setAssigneeThinkingEffort(draft.assigneeThinkingEffort ?? "");
       setAssigneeChrome(draft.assigneeChrome ?? false);
+      setAssigneeSessionStrategy(draft.assigneeSessionStrategy ?? "");
       setExecutionWorkspaceMode(
         draft.executionWorkspaceMode
           ?? (draft.useIsolatedExecutionWorkspace ? "isolated_workspace" : defaultExecutionWorkspaceModeForProject(restoredProject)),
@@ -559,6 +581,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
+      setAssigneeSessionStrategy("");
       setExecutionWorkspaceMode(defaultExecutionWorkspaceModeForProject(defaultProject));
       setSelectedExecutionWorkspaceId("");
       executionWorkspaceDefaultProjectId.current = defaultProjectId || null;
@@ -571,6 +594,7 @@ export function NewIssueDialog() {
       setAssigneeModelOverride("");
       setAssigneeThinkingEffort("");
       setAssigneeChrome(false);
+      setAssigneeSessionStrategy("");
       return;
     }
 
@@ -579,7 +603,9 @@ export function NewIssueDialog() {
         ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
         : assigneeAdapterType === "opencode_local"
           ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+          : assigneeAdapterType === "openclaw_gateway"
+            ? ISSUE_THINKING_EFFORT_OPTIONS.openclaw_gateway
+            : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
     if (!validThinkingValues.some((option) => option.value === assigneeThinkingEffort)) {
       setAssigneeThinkingEffort("");
     }
@@ -604,6 +630,7 @@ export function NewIssueDialog() {
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
+    setAssigneeSessionStrategy("");
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
     setExpanded(false);
@@ -623,6 +650,7 @@ export function NewIssueDialog() {
     setAssigneeModelOverride("");
     setAssigneeThinkingEffort("");
     setAssigneeChrome(false);
+    setAssigneeSessionStrategy("");
     setExecutionWorkspaceMode("shared_workspace");
     setSelectedExecutionWorkspaceId("");
   }
@@ -640,6 +668,7 @@ export function NewIssueDialog() {
       modelOverride: assigneeModelOverride,
       thinkingEffortOverride: assigneeThinkingEffort,
       chrome: assigneeChrome,
+      sessionStrategy: assigneeSessionStrategy,
     });
     const selectedProject = orderedProjects.find((project) => project.id === projectId);
     const executionWorkspacePolicy =
@@ -780,13 +809,17 @@ export function NewIssueDialog() {
         ? "Codex options"
         : assigneeAdapterType === "opencode_local"
           ? "OpenCode options"
-        : "Agent options";
+          : assigneeAdapterType === "openclaw_gateway"
+            ? "OpenClaw options"
+            : "Agent options";
   const thinkingEffortOptions =
     assigneeAdapterType === "codex_local"
       ? ISSUE_THINKING_EFFORT_OPTIONS.codex_local
       : assigneeAdapterType === "opencode_local"
         ? ISSUE_THINKING_EFFORT_OPTIONS.opencode_local
-      : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
+        : assigneeAdapterType === "openclaw_gateway"
+          ? ISSUE_THINKING_EFFORT_OPTIONS.openclaw_gateway
+          : ISSUE_THINKING_EFFORT_OPTIONS.claude_local;
   const recentAssigneeIds = useMemo(() => getRecentAssigneeIds(), [newIssueOpen]);
   const assigneeOptions = useMemo<InlineEntityOption[]>(
     () => [
@@ -857,6 +890,17 @@ export function NewIssueDialog() {
     },
     [assigneeAdapterModels],
   );
+
+  // Group models by provider for native <select> with <optgroup> (OpenClaw)
+  const modelsByProvider = useMemo(() => {
+    if (!isOpenClawAssignee || !assigneeAdapterModels?.length) return null;
+    const groups: Record<string, { id: string; label: string }[]> = {};
+    for (const m of assigneeAdapterModels) {
+      const provider = extractProviderIdWithFallback(m.id);
+      (groups[provider] ??= []).push(m);
+    }
+    return groups;
+  }, [isOpenClawAssignee, assigneeAdapterModels]);
 
   return (
     <Dialog
@@ -1177,34 +1221,78 @@ export function NewIssueDialog() {
               <div className="mt-2 rounded-md border border-border p-3 bg-muted/20 space-y-3">
                 <div className="space-y-1.5">
                   <div className="text-xs text-muted-foreground">Model</div>
-                  <InlineEntitySelector
-                    value={assigneeModelOverride}
-                    options={modelOverrideOptions}
-                    placeholder="Default model"
-                    disablePortal
-                    noneLabel="Default model"
-                    searchPlaceholder="Search models..."
-                    emptyMessage="No models found."
-                    onChange={setAssigneeModelOverride}
-                  />
+                  {modelsByProvider ? (
+                    <select
+                      value={assigneeModelOverride}
+                      onChange={(e) => setAssigneeModelOverride(e.target.value)}
+                      className="w-full rounded-md border border-border px-2.5 py-1.5 bg-background text-foreground outline-none text-xs [color-scheme:dark] dark:bg-background"
+                    >
+                      <option value="">Default model</option>
+                      {Object.entries(modelsByProvider).map(([provider, models]) => (
+                        <optgroup key={provider} label={provider}>
+                          {models.map((m) => (
+                            <option key={m.id} value={m.id}>{m.label}</option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </select>
+                  ) : (
+                    <InlineEntitySelector
+                      value={assigneeModelOverride}
+                      options={modelOverrideOptions}
+                      placeholder="Default model"
+                      disablePortal
+                      noneLabel="Default model"
+                      searchPlaceholder="Search models..."
+                      emptyMessage="No models found."
+                      onChange={setAssigneeModelOverride}
+                    />
+                  )}
                 </div>
                 <div className="space-y-1.5">
                   <div className="text-xs text-muted-foreground">Thinking effort</div>
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                  <select
+                    value={assigneeThinkingEffort}
+                    onChange={(e) => setAssigneeThinkingEffort(e.target.value)}
+                    className="w-full rounded-md border border-border px-2.5 py-1.5 bg-background text-foreground outline-none text-xs [color-scheme:dark] dark:bg-background"
+                  >
                     {thinkingEffortOptions.map((option) => (
-                      <button
-                        key={option.value || "default"}
-                        className={cn(
-                          "px-2 py-1 rounded-md text-xs border border-border hover:bg-accent/50 transition-colors",
-                          assigneeThinkingEffort === option.value && "bg-accent"
-                        )}
-                        onClick={() => setAssigneeThinkingEffort(option.value)}
-                      >
+                      <option key={option.value || "default"} value={option.value}>
                         {option.label}
-                      </button>
+                      </option>
                     ))}
-                  </div>
+                  </select>
                 </div>
+                {assigneeAdapterType === "openclaw_gateway" && (
+                  <div className="space-y-1.5">
+                    <div className="text-xs text-muted-foreground">Session strategy</div>
+                    <select
+                      value={assigneeSessionStrategy}
+                      onChange={(e) => setAssigneeSessionStrategy(e.target.value)}
+                      className="w-full rounded-md border border-border px-2.5 py-1.5 bg-background text-foreground outline-none text-xs [color-scheme:dark] dark:bg-background"
+                    >
+                      {[
+                        { value: "", label: "Default" },
+                        { value: "project", label: "Per project" },
+                        { value: "issue", label: "Per issue" },
+                        { value: "run", label: "Per run" },
+                        { value: "fixed", label: "Fixed" },
+                      ].map((option) => (
+                        <option key={option.value || "default"} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    {assigneeSessionStrategy && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        {assigneeSessionStrategy === "project" && "Shared context across project issues. Runs serialize."}
+                        {assigneeSessionStrategy === "issue" && "Isolated session per issue. Parallel execution."}
+                        {assigneeSessionStrategy === "fixed" && "Single shared session. Fully serialized."}
+                        {assigneeSessionStrategy === "run" && "Fresh session each run. No shared context."}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {assigneeAdapterType === "claude_local" && (
                   <div className="flex items-center justify-between rounded-md border border-border px-2 py-1.5">
                     <div className="text-xs text-muted-foreground">Enable Chrome (--chrome)</div>

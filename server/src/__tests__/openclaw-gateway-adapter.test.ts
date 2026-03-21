@@ -86,6 +86,30 @@ async function createMockGatewayServer(options?: {
         return;
       }
 
+      if (frame.method === "sessions.list" || frame.method === "sessions.patch") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: frame.method === "sessions.list" ? [] : { ok: true },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "chat.history") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: { messages: [] },
+          }),
+        );
+        return;
+      }
+
       if (frame.method === "agent") {
         agentPayload = frame.params ?? null;
         const runId =
@@ -245,6 +269,30 @@ async function createMockGatewayServerWithPairing() {
               snapshot: { version: 1, ts: Date.now() },
               policy: { maxPayload: 1_000_000, maxBufferedBytes: 1_000_000, tickIntervalMs: 30_000 },
             },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "sessions.list" || frame.method === "sessions.patch") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: frame.method === "sessions.list" ? [] : { ok: true },
+          }),
+        );
+        return;
+      }
+
+      if (frame.method === "chat.history") {
+        socket.send(
+          JSON.stringify({
+            type: "res",
+            id: frame.id,
+            ok: true,
+            payload: { messages: [] },
           }),
         );
         return;
@@ -420,6 +468,7 @@ describe("openclaw gateway adapter execute", () => {
             context: {
               taskId: "task-123",
               issueId: "issue-123",
+              projectId: "project-456",
               wakeReason: "issue_assigned",
               issueIds: ["issue-123"],
               paperclipWorkspace: {
@@ -452,7 +501,7 @@ describe("openclaw gateway adapter execute", () => {
       const payload = gateway.getAgentPayload();
       expect(payload).toBeTruthy();
       expect(payload?.idempotencyKey).toBe("run-123");
-      expect(payload?.sessionKey).toBe("paperclip:issue:issue-123");
+      expect(payload?.sessionKey).toBe("paperclip:project:project-456");
       expect(String(payload?.message ?? "")).toContain("wake now");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_RUN_ID=run-123");
       expect(String(payload?.message ?? "")).toContain("PAPERCLIP_TASK_ID=task-123");

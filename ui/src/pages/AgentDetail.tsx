@@ -1655,7 +1655,8 @@ function PromptsTab({
     agent.adapterType === "opencode_local" ||
     agent.adapterType === "pi_local" ||
     agent.adapterType === "hermes_local" ||
-    agent.adapterType === "cursor";
+    agent.adapterType === "cursor" ||
+    agent.adapterType === "openclaw_gateway";
 
   const { data: bundle, isLoading: bundleLoading } = useQuery({
     queryKey: queryKeys.agents.instructionsBundle(agent.id),
@@ -2530,7 +2531,7 @@ function AgentSkillsTab({
   const unsupportedSkillMessage = useMemo(() => {
     if (skillSnapshot?.mode !== "unsupported") return null;
     if (agent.adapterType === "openclaw_gateway") {
-      return "Paperclip cannot manage OpenClaw skills here. Visit your OpenClaw instance to manage this agent's skills.";
+      return "OpenClaw native skills are managed by the gateway. Paperclip-bundled skills can be toggled here and are injected per-session.";
     }
     return "Paperclip cannot manage skills for this adapter yet. Manage them in the adapter directly.";
   }, [agent.adapterType, skillSnapshot?.mode]);

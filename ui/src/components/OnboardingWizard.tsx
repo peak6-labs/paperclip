@@ -859,10 +859,9 @@ export function OnboardingWizard() {
                             label: "OpenClaw Gateway",
                             icon: Bot,
                             desc: "Invoke OpenClaw via gateway protocol",
-                            comingSoon: true,
                             disabledLabel: "Configure OpenClaw within the App"
                           }
-                        ].map((opt) => (
+                        ].map((opt: { value: string; label: string; icon: React.ComponentType<{ className?: string }>; desc: string; comingSoon?: boolean; disabledLabel?: string }) => (
                           <button
                             key={opt.value}
                             disabled={!!opt.comingSoon}
@@ -899,8 +898,7 @@ export function OnboardingWizard() {
                             <span className="font-medium">{opt.label}</span>
                             <span className="text-muted-foreground text-[10px]">
                               {opt.comingSoon
-                                ? (opt as { disabledLabel?: string })
-                                    .disabledLabel ?? "Coming soon"
+                                ? opt.disabledLabel ?? "Coming soon"
                                 : opt.desc}
                             </span>
                           </button>
