@@ -46,6 +46,27 @@ async function buildOpenClawSkillSnapshot(config: Record<string, unknown>): Prom
     requiredReason: entry.requiredReason ?? null,
   }));
 
+  // Query OpenClaw gateway for native skills
+  const gatewaySkills = await queryGatewaySkills(config);
+  for (const gs of gatewaySkills) {
+    const key = `openclaw/${gs.key || gs.name || "unknown"}`;
+    // If the skill is in desiredSet, use that. Otherwise default to gateway's enabled state.
+    const isDesired = desiredSet.has(key) ? true : (gs.enabled !== false);
+    entries.push({
+      key,
+      runtimeName: gs.name ?? gs.key ?? null,
+      desired: isDesired,
+      managed: false,
+      state: isDesired ? "installed" : "available",
+      origin: "user_installed",
+      originLabel: "OpenClaw Gateway",
+      readOnly: false,
+      sourcePath: gs.location ?? undefined,
+      targetPath: undefined,
+      detail: gs.description ?? null,
+    });
+  }
+
   const warnings: string[] = [];
 
   for (const desiredSkill of desiredSkills) {
