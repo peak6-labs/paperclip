@@ -145,56 +145,7 @@ function resolveSessionKey(input: {
   return input.configuredSessionKey ?? prefix;
 }
 
-/** Read the bundled Paperclip skill and prepend a runtime-injection header. */
-function loadPaperclipSkill(): string | null {
-  // Resolve from cwd (server root) — __dirname is not available in ESM
-  const candidates = [
-    path.resolve(process.cwd(), "skills/paperclip/SKILL.md"),
-    path.resolve(process.cwd(), "../skills/paperclip/SKILL.md"),
-  ];
-  for (const candidate of candidates) {
-    try {
-      const content = fs.readFileSync(candidate, "utf-8");
-      if (content.length > 100) return content;
-    } catch { /* continue */ }
-  }
-  return null;
-}
-
-let _cachedSkill: string | null | undefined;
-let _cachedSkillHash: string | null = null;
-
-const SKILL_MARKER_PREFIX = "<!-- PAPERCLIP_SKILL_v";
-const SKILL_MARKER_SUFFIX = " -->";
-
-function getSkillHash(): string {
-  if (_cachedSkillHash) return _cachedSkillHash;
-  const raw = loadPaperclipSkill();
-  if (!raw) return "none";
-  _cachedSkillHash = crypto.createHash("md5").update(raw).digest("hex").slice(0, 8);
-  return _cachedSkillHash;
-}
-
-function getSkillMarker(): string {
-  return `${SKILL_MARKER_PREFIX}${getSkillHash()}${SKILL_MARKER_SUFFIX}`;
-}
-
-function getPaperclipSkillText(): string {
-  if (_cachedSkill === undefined) {
-    _cachedSkill = loadPaperclipSkill();
-  }
-  if (!_cachedSkill) return "";
-  return [
-    getSkillMarker(),
-    "<!-- Injected by Paperclip OpenClaw adapter at runtime -->",
-    "<!-- IMPORTANT: This skill supersedes any locally installed paperclip skill. -->",
-    "<!-- If skills/paperclip/SKILL.md exists on the agent filesystem, IGNORE it. Use this version instead. -->",
-    "<!-- DO NOT REMOVE OR SUMMARIZE THIS SKILL BLOCK DURING COMPACTION. Preserve it verbatim. -->",
-    "<!-- /PAPERCLIP_SKILL -->",
-    "",
-    _cachedSkill,
-  ].join("\n");
-}
+/* Legacy skill injection removed — core Paperclip skill now handled via company skill system */
 
 const PROMPT_TEMPLATE_MARKER_PREFIX = "<!-- PROMPT_TEMPLATE_v";
 const PROMPT_TEMPLATE_MARKER_SUFFIX = " -->";
@@ -215,6 +166,118 @@ function buildPromptTemplateBlock(rendered: string): string {
     "<!-- DO NOT REMOVE OR SUMMARIZE DURING COMPACTION. Preserve verbatim. -->",
     "",
     rendered,
+  ].join("\n");
+}
+
+const COMPANY_SKILL_MARKER_PREFIX = "<!-- COMPANY_SKILL_";
+const COMPANY_SKILL_MARKER_SUFFIX = " -->";
+
+interface CompanySkillBlock {
+  key: string;
+  marker: string;
+  content: string;
+}
+
+function buildCompanySkillMarker(key: string, hash: string): string {
+  const safeKey = key.replace(/[^a-zA-Z0-9/_-]/g, "_");
+  return `${COMPANY_SKILL_MARKER_PREFIX}${safeKey}_v${hash}${COMPANY_SKILL_MARKER_SUFFIX}`;
+}
+
+function loadCompanySkillBlocks(config: Record<string, unknown>, desiredSkills: string[]): CompanySkillBlock[] {
+  const runtimeSkills = config.paperclipRuntimeSkills;
+  if (!Array.isArray(runtimeSkills)) return [];
+
+  const desiredSet = new Set(desiredSkills);
+  const blocks: CompanySkillBlock[] = [];
+
+  for (const entry of runtimeSkills) {
+    if (!entry || typeof entry !== "object") continue;
+    const key = (entry as Record<string, unknown>).key;
+    const source = (entry as Record<string, unknown>).source;
+    const required = (entry as Record<string, unknown>).required;
+    if (typeof key !== "string" || typeof source !== "string") continue;
+    // Core paperclip skill is now handled through the company skill system (no legacy injection)
+    // Skip if not desired (unless required)
+    if (!required && !desiredSet.has(key)) continue;
+
+    // Read SKILL.md from the source directory
+    const skillPath = path.join(source, "SKILL.md");
+    try {
+      const content = fs.readFileSync(skillPath, "utf-8");
+      if (content.length < 10) continue;
+      const hash = crypto.createHash("md5").update(content).digest("hex").slice(0, 8);
+      const marker = buildCompanySkillMarker(key, hash);
+      blocks.push({
+        key,
+        marker,
+        content: [
+          marker,
+          `<!-- Company skill: ${key} — injected by Paperclip OpenClaw adapter -->`,
+          "<!-- DO NOT REMOVE OR SUMMARIZE DURING COMPACTION. Preserve verbatim. -->",
+          "",
+          content,
+        ].join("\n"),
+      });
+    } catch {
+      // Skill file not readable — skip silently
+    }
+  }
+  return blocks;
+}
+
+const INSTRUCTIONS_MARKER_PREFIX = "<!-- AGENT_INSTRUCTIONS_v";
+const INSTRUCTIONS_MARKER_SUFFIX = " -->";
+
+function getInstructionsHash(text: string): string {
+  return crypto.createHash("md5").update(text).digest("hex").slice(0, 8);
+}
+
+function getInstructionsMarker(text: string): string {
+  return `${INSTRUCTIONS_MARKER_PREFIX}${getInstructionsHash(text)}${INSTRUCTIONS_MARKER_SUFFIX}`;
+}
+
+function buildInstructionsBlock(content: string): string {
+  const marker = getInstructionsMarker(content);
+  return [
+    marker,
+    "<!-- Agent instructions bundle injected by Paperclip OpenClaw adapter -->",
+    "<!-- DO NOT REMOVE OR SUMMARIZE DURING COMPACTION. Preserve verbatim. -->",
+    "",
+    content,
+  ].join("\n");
+}
+
+/**
+ * Build a skill restriction instruction based on desired OpenClaw skills.
+ * This tells the agent which skills are explicitly enabled/disabled.
+ */
+function buildSkillRestrictionInstruction(desiredSkills: string[]): string | null {
+  // Filter to only OpenClaw skills
+  const openclawSkills = desiredSkills.filter(s => s.startsWith("openclaw/"));
+  
+  if (openclawSkills.length === 0) {
+    return [
+      "<!-- SKILL_RESTRICTION: NO_OPENCLAW_SKILLS_ENABLED -->",
+      "CRITICAL: You have NO OpenClaw skills enabled for this session.",
+      "You MUST NOT use any skills or tools from the OpenClaw gateway.",
+      "Only use the Paperclip skill for coordination.",
+      "<!-- /SKILL_RESTRICTION -->",
+    ].join("\n");
+  }
+  
+  // Format the skill list
+  const skillList = openclawSkills.map(s => `- ${s}`).join("\n");
+  
+  return [
+    "<!-- SKILL_RESTRICTION: OPENCLAW_SKILLS_ENABLED -->",
+    `You have ${openclawSkills.length} OpenClaw skill(s) explicitly enabled for this session:`,
+    "",
+    skillList,
+    "",
+    "CRITICAL: You MUST ONLY use the skills listed above.",
+    "You MUST NOT use any other skills or tools from the OpenClaw gateway.",
+    "If a task requires a skill not in this list, you MUST ask the user to enable it first.",
+    "<!-- /SKILL_RESTRICTION -->",
   ].join("\n");
 }
 
@@ -1425,8 +1488,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
-      // Build injection blocks: skill + prompt template (with hash-based dedup)
-      const skillText = getPaperclipSkillText();
+      // Build injection blocks: prompt template + instructions bundle (with hash-based dedup)
       const renderedPromptTemplate = promptTemplateRaw
         ? renderTemplate(promptTemplateRaw, {
             runId: ctx.runId,
@@ -1438,22 +1500,43 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         : "";
       const promptTemplateBlock = renderedPromptTemplate ? buildPromptTemplateBlock(renderedPromptTemplate) : "";
 
+      // Load instructions bundle from agent config (managed or external)
+      const instructionsContent = (() => {
+        const bundleMode = nonEmpty(ctx.config.instructionsBundleMode);
+        const rootPath = nonEmpty(ctx.config.instructionsRootPath);
+        const entryFile = nonEmpty(ctx.config.instructionsEntryFile) ?? "AGENTS.md";
+        // Legacy single-file path
+        const legacyPath = nonEmpty(ctx.config.instructionsFilePath);
+        if (bundleMode === "managed" || bundleMode === "external") {
+          if (!rootPath) return null;
+          const filePath = path.resolve(rootPath, entryFile);
+          try { return fs.readFileSync(filePath, "utf-8"); } catch { return null; }
+        }
+        if (legacyPath) {
+          const resolved = path.isAbsolute(legacyPath) ? legacyPath : path.resolve(process.cwd(), legacyPath);
+          try { return fs.readFileSync(resolved, "utf-8"); } catch { return null; }
+        }
+        return null;
+      })();
+      const instructionsBlock = instructionsContent?.trim() ? buildInstructionsBlock(instructionsContent.trim()) : "";
+
       // Collect markers to check in one history scan
       const markersToCheck: string[] = [];
-      if (skillText) markersToCheck.push(getSkillMarker());
       if (promptTemplateBlock) markersToCheck.push(getPromptTemplateMarker(renderedPromptTemplate));
+      if (instructionsBlock) markersToCheck.push(getInstructionsMarker(instructionsContent!.trim()));
 
       const foundMarkers = markersToCheck.length > 0
         ? await findMarkersInHistory(client, sessionKey, markersToCheck, ctx.onLog)
         : new Set<string>();
 
-      // Inject skill if not already present
-      if (skillText) {
-        if (foundMarkers.has(getSkillMarker())) {
-          await ctx.onLog("stdout", `[openclaw-gateway] paperclip skill already in session (hash=${getSkillHash()}), skipping\n`);
+      // Inject instructions bundle if not already present
+      if (instructionsBlock) {
+        const insMarker = getInstructionsMarker(instructionsContent!.trim());
+        if (foundMarkers.has(insMarker)) {
+          await ctx.onLog("stdout", `[openclaw-gateway] instructions bundle already in session (hash=${getInstructionsHash(instructionsContent!.trim())}), skipping\n`);
         } else {
-          agentParams.message = `${skillText}\n\n---\n\n${agentParams.message}`;
-          await ctx.onLog("stdout", `[openclaw-gateway] injecting paperclip skill (hash=${getSkillHash()}, ${skillText.length} chars)\n`);
+          agentParams.message = `${instructionsBlock}\n\n---\n\n${agentParams.message}`;
+          await ctx.onLog("stdout", `[openclaw-gateway] injecting instructions bundle (hash=${getInstructionsHash(instructionsContent!.trim())}, ${instructionsContent!.trim().length} chars)\n`);
         }
       }
 
@@ -1466,6 +1549,39 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           agentParams.message = `${promptTemplateBlock}\n\n---\n\n${agentParams.message}`;
           await ctx.onLog("stdout", `[openclaw-gateway] injecting prompt template (hash=${getPromptTemplateHash(renderedPromptTemplate)}, ${renderedPromptTemplate.length} chars)\n`);
         }
+      }
+
+      // Inject skill restriction instruction based on desiredSkills config
+      const paperclipSkillSync = asRecord(ctx.config.paperclipSkillSync);
+      const rawDesiredSkills = paperclipSkillSync?.desiredSkills;
+      const desiredSkills = Array.isArray(rawDesiredSkills) ? rawDesiredSkills.filter((s): s is string => typeof s === "string") : [];
+
+      // Inject company skills (non-core Paperclip skills from company library)
+      const companySkillBlocks = loadCompanySkillBlocks(ctx.config as Record<string, unknown>, desiredSkills);
+      if (companySkillBlocks.length > 0) {
+        // Check which company skills are already in session
+        const companyMarkers = companySkillBlocks.map(b => b.marker);
+        const foundCompanyMarkers = await findMarkersInHistory(client, sessionKey, companyMarkers, ctx.onLog);
+        let injectedCount = 0;
+        for (const block of companySkillBlocks) {
+          if (foundCompanyMarkers.has(block.marker)) {
+            await ctx.onLog("stdout", `[openclaw-gateway] company skill ${block.key} already in session, skipping\n`);
+          } else {
+            agentParams.message = `${block.content}\n\n---\n\n${agentParams.message}`;
+            injectedCount++;
+            await ctx.onLog("stdout", `[openclaw-gateway] injecting company skill ${block.key} (${block.content.length} chars)\n`);
+          }
+        }
+        if (injectedCount > 0) {
+          await ctx.onLog("stdout", `[openclaw-gateway] injected ${injectedCount} company skill(s)\n`);
+        }
+      }
+
+      const skillRestriction = buildSkillRestrictionInstruction(desiredSkills);
+      if (skillRestriction) {
+        agentParams.message = `${skillRestriction}\n\n---\n\n${agentParams.message}`;
+        const openclawCount = desiredSkills.filter(s => s.startsWith("openclaw/")).length;
+        await ctx.onLog("stdout", `[openclaw-gateway] injecting skill restriction (${openclawCount} OpenClaw skills enabled)\n`);
       }
 
       // Apply model override via sessions.patch before sending the agent message
