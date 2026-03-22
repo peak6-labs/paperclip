@@ -124,7 +124,7 @@ export async function gatewayRpc<T = unknown>(
     const raw = rawConfig.scopes;
     if (Array.isArray(raw)) return raw.filter((s): s is string => typeof s === "string");
     if (typeof raw === "string") return raw.split(",").map((s) => s.trim()).filter(Boolean);
-    return ["operator.admin"];
+    return ["operator.admin", "operator.read"];
   })();
 
   return new Promise((resolve) => {
