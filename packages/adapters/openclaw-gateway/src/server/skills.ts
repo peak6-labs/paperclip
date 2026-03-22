@@ -48,12 +48,17 @@ async function buildOpenClawSkillSnapshot(config: Record<string, unknown>): Prom
 
   // Query OpenClaw gateway for native skills
   const gatewaySkills = await queryGatewaySkills(config);
+  const hasExplicitDesired = Boolean(
+    typeof config.paperclipSkillSync === "object" &&
+    config.paperclipSkillSync !== null &&
+    Array.isArray((config.paperclipSkillSync as Record<string, unknown>).desiredSkills),
+  );
   for (const gs of gatewaySkills) {
     const key = `openclaw/${gs.key || gs.name || "unknown"}`;
-    // If explicitly in desiredSet, use that. Otherwise default to gateway's enabled state.
-    const isDesired = desiredSet.has(key) ? true : (gs.enabled !== false);
+    // If user has never synced (no explicit desiredSkills), default to gateway's enabled state.
+    // Once the user has synced, only mark as desired if explicitly in the saved set.
+    const isDesired = hasExplicitDesired ? desiredSet.has(key) : (gs.enabled !== false);
     if (isDesired && !desiredSet.has(key)) {
-      // Add enabled gateway skills to desiredSkills so the UI draft shows them checked
       desiredSkills.push(key);
       desiredSet.add(key);
     }
@@ -110,7 +115,19 @@ export async function listOpenClawSkills(ctx: AdapterSkillContext): Promise<Adap
 
 export async function syncOpenClawSkills(
   ctx: AdapterSkillContext,
-  _desiredSkills: string[],
+  desiredSkills: string[],
 ): Promise<AdapterSkillSnapshot> {
-  return buildOpenClawSkillSnapshot(ctx.config);
+  // Write the explicitly requested skills, then rebuild the full snapshot.
+  // Temporarily override the config's desiredSkills so buildOpenClawSkillSnapshot
+  // uses the new set instead of auto-adding enabled gateway skills.
+  const patchedConfig = {
+    ...ctx.config,
+    paperclipSkillSync: {
+      ...(typeof ctx.config.paperclipSkillSync === "object" && ctx.config.paperclipSkillSync !== null
+        ? ctx.config.paperclipSkillSync as Record<string, unknown>
+        : {}),
+      desiredSkills,
+    },
+  };
+  return buildOpenClawSkillSnapshot(patchedConfig);
 }

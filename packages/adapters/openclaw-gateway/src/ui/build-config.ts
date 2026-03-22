@@ -58,7 +58,5 @@ export function buildOpenClawGatewayConfig(v: CreateConfigValues): Record<string
   if (typeof thinking === "string" && thinking.trim()) {
     ac.thinking = thinking.trim();
   }
-  // Pass prompt template
-  if (v.promptTemplate) ac.promptTemplate = v.promptTemplate;
   return ac;
 }
