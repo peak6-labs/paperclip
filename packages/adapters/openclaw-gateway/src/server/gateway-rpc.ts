@@ -257,12 +257,8 @@ async function autoApprovePairing(
       try { frame = JSON.parse(rawDataToString(raw)); } catch { return; }
 
       if (frame.type === "event" && frame.event === "connect.challenge") {
-        const nonce = String((frame.payload as Record<string, unknown>)?.nonce ?? "");
-        const signedAtMs = Date.now();
-        const payload = buildDeviceAuthPayloadV3({
-          deviceId: device.deviceId, clientId: "gateway-client", clientMode: "backend",
-          role, scopes: approvalScopes, signedAtMs, token: authToken, nonce,
-        });
+        // Connect with token-only auth (no device key) for the approval step
+        // — the device key is what needs pairing, so we can't use it here
         pairWs.send(JSON.stringify({
           type: "req", id: connId, method: "connect",
           params: {
@@ -270,11 +266,6 @@ async function autoApprovePairing(
             client: { id: "gateway-client", version: "paperclip", platform: process.platform, mode: "backend" },
             role, scopes: approvalScopes,
             auth: { token: authToken },
-            device: {
-              id: device.deviceId, publicKey: device.publicKeyRawBase64Url,
-              signature: signDevicePayload(device.privateKeyPem, payload),
-              signedAt: signedAtMs, nonce,
-            },
           },
         }));
         return;
