@@ -190,6 +190,11 @@ export async function gatewayRpc<T = unknown>(
           const errMsg = String(err?.message ?? "");
           const isPairingRequired = errMsg.toLowerCase().includes("pairing required");
           if (isPairingRequired && authToken && device) {
+            const hasAdminScope = scopes.some((s) => s === "operator.admin" || s === "admin");
+            if (!hasAdminScope) {
+              finish({ ok: false, error: { code: "PAIRING_REQUIRED", message: "Device pairing required but auto-approval needs operator.admin scope. Current scopes: [" + scopes.join(", ") + "]. Either add operator.admin to the agent's scopes or approve manually: openclaw devices approve --latest" } });
+              return;
+            }
             // Auto-approve pairing then retry
             autoApprovePairing(urlStr, headers, authToken, device, role, scopes)
               .then((pairOk) => {
@@ -198,10 +203,10 @@ export async function gatewayRpc<T = unknown>(
                   try { ws.close(); } catch { /* ignore */ }
                   gatewayRpc<T>(config, method, params, timeoutMs).then(finish);
                 } else {
-                  finish({ ok: false, error: { code: "PAIRING_FAILED", message: "Auto-pairing failed. Approve the device manually in OpenClaw." } });
+                  finish({ ok: false, error: { code: "PAIRING_FAILED", message: "Auto-pairing failed. Approve the device manually: openclaw devices approve --latest" } });
                 }
               })
-              .catch(() => finish({ ok: false, error: { code: "PAIRING_ERROR", message: "Auto-pairing error" } }));
+              .catch(() => finish({ ok: false, error: { code: "PAIRING_ERROR", message: "Auto-pairing error. Approve the device manually: openclaw devices approve --latest" } }));
             return;
           }
           finish({ ok: false, error: { code: String(err?.code ?? "CONNECT_FAILED"), message: String(err?.message ?? "Gateway connect failed") } });
