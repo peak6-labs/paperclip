@@ -2652,6 +2652,19 @@ function AgentSkillsTab({
 
   const activeCount = allToggleableRows.filter((r) => skillDraft.includes(r.key)).length;
   const totalCount = allToggleableRows.length;
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
+  const handleResetToGatewayDefaults = useCallback(() => {
+    // Reset to only gateway-enabled skills (from snapshot) + required Paperclip skills
+    const gatewayEnabled = (skillSnapshot?.entries ?? [])
+      .filter((e) => e.origin === "user_installed" && e.desired && e.state !== "missing")
+      .map((e) => e.key);
+    const required = (skillSnapshot?.entries ?? [])
+      .filter((e) => e.required)
+      .map((e) => e.key);
+    setSkillDraft(Array.from(new Set([...required, ...gatewayEnabled])));
+    setShowResetConfirm(false);
+  }, [skillSnapshot]);
 
   return (
     <div className="max-w-4xl space-y-5">
@@ -2731,7 +2744,40 @@ function AgentSkillsTab({
               >
                 Disable {skillSearch || skillFilter !== "all" ? "filtered" : "all"}
               </button>
+              {isOpenClawGateway && (
+                <button
+                  onClick={() => setShowResetConfirm(true)}
+                  className="rounded-md px-2 py-1 text-xs font-medium text-muted-foreground bg-muted hover:bg-accent hover:text-foreground transition-colors"
+                >
+                  Reset to defaults
+                </button>
+              )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {showResetConfirm && (
+        <div className="rounded-xl border border-amber-300/60 bg-amber-50/60 px-4 py-3 dark:border-amber-500/30 dark:bg-amber-950/20">
+          <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+            Reset skill selection to match OpenClaw gateway defaults?
+          </p>
+          <p className="mt-1 text-xs text-amber-700 dark:text-amber-300/80">
+            This will enable only gateway-enabled skills and required Paperclip skills. Company library skills will be disabled.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button
+              onClick={handleResetToGatewayDefaults}
+              className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700 transition-colors"
+            >
+              Reset
+            </button>
+            <button
+              onClick={() => setShowResetConfirm(false)}
+              className="rounded-md bg-muted px-3 py-1 text-xs font-medium text-foreground hover:bg-accent transition-colors"
+            >
+              Cancel
+            </button>
           </div>
         </div>
       )}
