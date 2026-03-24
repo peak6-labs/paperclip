@@ -57,7 +57,8 @@ async function buildOpenClawSkillSnapshot(config: Record<string, unknown>): Prom
     const key = `openclaw/${gs.key || gs.name || "unknown"}`;
     // If user has never synced (no explicit desiredSkills), default to gateway's enabled state.
     // Once the user has synced, only mark as desired if explicitly in the saved set.
-    const isDesired = hasExplicitDesired ? desiredSet.has(key) : (gs.enabled !== false);
+    const isGatewayEnabled = gs.enabled !== false && gs.eligible !== false;
+    const isDesired = hasExplicitDesired ? desiredSet.has(key) : isGatewayEnabled;
     if (isDesired && !desiredSet.has(key)) {
       desiredSkills.push(key);
       desiredSet.add(key);
@@ -74,7 +75,7 @@ async function buildOpenClawSkillSnapshot(config: Record<string, unknown>): Prom
       sourcePath: gs.location ?? undefined,
       targetPath: undefined,
       detail: gs.description ?? null,
-      locationLabel: gs.enabled !== false ? "Gateway: enabled" : "Gateway: disabled",
+      locationLabel: isGatewayEnabled ? "Gateway: enabled" : "Gateway: disabled",
     });
   }
 
