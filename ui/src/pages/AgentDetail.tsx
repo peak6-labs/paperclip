@@ -2655,9 +2655,10 @@ function AgentSkillsTab({
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const handleResetToGatewayDefaults = useCallback(() => {
-    // Reset to only gateway-enabled skills (from snapshot) + required Paperclip skills
+    // Reset: enable only gateway-enabled skills + required Paperclip skills.
+    // Disable company library skills and gateway-disabled skills.
     const gatewayEnabled = (skillSnapshot?.entries ?? [])
-      .filter((e) => e.origin === "user_installed" && e.desired && e.state !== "missing")
+      .filter((e) => e.origin === "user_installed" && e.locationLabel === "Gateway: enabled")
       .map((e) => e.key);
     const required = (skillSnapshot?.entries ?? [])
       .filter((e) => e.required)

@@ -74,6 +74,7 @@ async function buildOpenClawSkillSnapshot(config: Record<string, unknown>): Prom
       sourcePath: gs.location ?? undefined,
       targetPath: undefined,
       detail: gs.description ?? null,
+      locationLabel: gs.enabled !== false ? "Gateway: enabled" : "Gateway: disabled",
     });
   }
 
