@@ -474,6 +474,17 @@ function redactForLog(value: unknown, keyPath: string[] = [], depth = 0): unknow
   return String(value);
 }
 
+/** Redact JWT / API key values embedded in the message text before logging. */
+function redactMessageSecrets(params: Record<string, unknown>): Record<string, unknown> {
+  const msg = params.message;
+  if (typeof msg !== "string") return params;
+  const redacted = msg.replace(
+    /PAPERCLIP_API_KEY=([^\s\n]+)/g,
+    (_, token: string) => `PAPERCLIP_API_KEY=[redacted len=${token.length}]`,
+  );
+  return { ...params, message: redacted };
+}
+
 function stringifyForLog(value: unknown, maxChars: number): string {
   const text = JSON.stringify(value);
   if (text.length <= maxChars) return text;
@@ -1331,7 +1342,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   );
   await ctx.onLog(
     "stdout",
-    `[openclaw-gateway] outbound payload (redacted): ${stringifyForLog(redactForLog(agentParams), 12_000)}\n`,
+    `[openclaw-gateway] outbound payload (redacted): ${stringifyForLog(redactForLog(redactMessageSecrets(agentParams)), 12_000)}\n`,
   );
   await ctx.onLog("stdout", `[openclaw-gateway] outbound header keys: ${outboundHeaderKeys.join(", ")}\n`);
   if (transportHint) {
@@ -1355,6 +1366,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   {
     const RETRY_DELAYS_MS = [5_000, 30_000, 60_000, 150_000, 300_000];
     const RETRYABLE_CODES = new Set([1006, 1011, 1012, 1013, 1014]);
+    const overallStartMs = Date.now();
+    const overallTimeoutMs = waitTimeoutMs + connectTimeoutMs;
     let attemptNumber = 0;
 
     // eslint-disable-next-line no-constant-condition
@@ -1770,16 +1783,25 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const isRetryable = RETRYABLE_CODES.has(wsCloseCode) || isEconnReset || lower.includes("websocket open timeout");
 
       if (isRetryable && attemptNumber <= RETRY_DELAYS_MS.length) {
+        const elapsedMs = Date.now() - overallStartMs;
         const delayMs = RETRY_DELAYS_MS[attemptNumber - 1]!;
         const jitterMs = Math.floor(Math.random() * Math.min(delayMs * 0.3, 5_000));
         const totalDelayMs = delayMs + jitterMs;
-        await ctx.onLog(
-          "stdout",
-          `[openclaw-gateway] transient failure (code=${wsCloseCode || "none"}), retrying in ${Math.round(totalDelayMs / 1000)}s (attempt ${attemptNumber}/${RETRY_DELAYS_MS.length + 1})\n`,
-        );
-        client.close();
-        await new Promise((r) => setTimeout(r, totalDelayMs));
-        continue;
+        // Don't retry if the overall timeout would be exceeded
+        if (elapsedMs + totalDelayMs > overallTimeoutMs) {
+          await ctx.onLog(
+            "stdout",
+            `[openclaw-gateway] transient failure (code=${wsCloseCode || "none"}), skipping retry — would exceed overall timeout (${Math.round(elapsedMs / 1000)}s elapsed, ${Math.round(overallTimeoutMs / 1000)}s limit)\n`,
+          );
+        } else {
+          await ctx.onLog(
+            "stdout",
+            `[openclaw-gateway] transient failure (code=${wsCloseCode || "none"}), retrying in ${Math.round(totalDelayMs / 1000)}s (attempt ${attemptNumber}/${RETRY_DELAYS_MS.length + 1}, ${Math.round(elapsedMs / 1000)}s elapsed)\n`,
+          );
+          client.close();
+          await new Promise((r) => setTimeout(r, totalDelayMs));
+          continue;
+        }
       }
 
       return {
