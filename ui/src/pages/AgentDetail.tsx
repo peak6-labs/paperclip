@@ -2515,7 +2515,7 @@ function AgentSkillsTab({
       !isOpenClawGateway
         ? []
         : (skillSnapshot?.entries ?? [])
-            .filter((entry) => !companySkillKeys.has(entry.key) && entry.origin === "user_installed")
+            .filter((entry) => !companySkillKeys.has(entry.key) && entry.origin === "user_installed" && !entry.readOnly)
             .map((entry) => ({
               id: `gateway:${entry.key}`,
               key: entry.key,
@@ -2526,6 +2526,26 @@ function AgentSkillsTab({
               originLabel: "OpenClaw gateway skill",
               linkTo: null,
               readOnly: false,
+              adapterEntry: entry,
+            })),
+    [companySkillKeys, isOpenClawGateway, skillSnapshot],
+  );
+  const gatewayUnavailableRows = useMemo<SkillRow[]>(
+    () =>
+      !isOpenClawGateway
+        ? []
+        : (skillSnapshot?.entries ?? [])
+            .filter((entry) => !companySkillKeys.has(entry.key) && entry.origin === "user_installed" && entry.readOnly)
+            .map((entry) => ({
+              id: `gateway-unavail:${entry.key}`,
+              key: entry.key,
+              name: entry.runtimeName ?? entry.key,
+              description: entry.detail ?? null,
+              detail: null,
+              locationLabel: entry.locationLabel ?? null,
+              originLabel: entry.originLabel ?? "OpenClaw gateway skill",
+              linkTo: null,
+              readOnly: true,
               adapterEntry: entry,
             })),
     [companySkillKeys, isOpenClawGateway, skillSnapshot],
@@ -2879,7 +2899,7 @@ function AgentSkillsTab({
               );
             };
 
-            if (optionalSkillRows.length === 0 && requiredSkillRows.length === 0 && unmanagedSkillRows.length === 0 && gatewaySkillRows.length === 0) {
+            if (optionalSkillRows.length === 0 && requiredSkillRows.length === 0 && unmanagedSkillRows.length === 0 && gatewaySkillRows.length === 0 && gatewayUnavailableRows.length === 0) {
               return (
                 <section className="border-y border-border">
                   <div className="px-3 py-6 text-sm text-muted-foreground">
@@ -2923,6 +2943,17 @@ function AgentSkillsTab({
                   <div className="px-3 py-6 text-sm text-muted-foreground text-center">
                     No skills match{skillSearch ? ` "${skillSearch}"` : ""}{skillFilter !== "all" ? ` (${skillFilter})` : ""}
                   </div>
+                )}
+
+                {gatewayUnavailableRows.length > 0 && (
+                  <section className="border-y border-border">
+                    <div className="border-b border-border bg-muted/40 px-3 py-2">
+                      <span className="text-xs font-medium text-muted-foreground">
+                        Unavailable on gateway ({gatewayUnavailableRows.length})
+                      </span>
+                    </div>
+                    {gatewayUnavailableRows.map(renderSkillRow)}
+                  </section>
                 )}
 
                 {unmanagedSkillRows.length > 0 && (
