@@ -1313,7 +1313,9 @@ export function pluginLoader(
         // For local-path installs, fall back to the stored packagePath so
         // `upgradePlugin` can re-read the manifest from disk without needing
         // the caller to re-supply the path every time.
-        localPath = plugin.packagePath ?? undefined,
+        // Do NOT fall back to packagePath when a packageName is explicitly provided
+        // (e.g. migrating from a local install to an npm package).
+        localPath = upgradeOptions.packageName ? undefined : (plugin.packagePath ?? undefined),
         version,
       } = upgradeOptions;
 
