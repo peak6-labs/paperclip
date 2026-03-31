@@ -1473,7 +1473,7 @@ export function pluginRoutes(
    * Errors: 404 if plugin not found, 400 for lifecycle errors
    */
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
-    assertBoard(req);
+    assertAuthenticated(req);
     const { pluginId } = req.params;
     const body = req.body as { version?: string; packageName?: string } | undefined;
     const version = body?.version;
