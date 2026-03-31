@@ -639,11 +639,11 @@ export function pluginLifecycleManager(
     async upgrade(pluginId: string, version?: string, packageName?: string): Promise<PluginRecord> {
       const plugin = await requirePlugin(pluginId);
 
-      // Can only upgrade plugins that are ready or already in upgrade_pending
-      if (plugin.status !== "ready" && plugin.status !== "upgrade_pending") {
+      // Can only upgrade plugins that are ready, in error, or already in upgrade_pending
+      if (plugin.status !== "ready" && plugin.status !== "upgrade_pending" && plugin.status !== "error") {
         throw badRequest(
           `Cannot upgrade plugin in status '${plugin.status}'. ` +
-            `Plugin must be in 'ready' or 'upgrade_pending' status to be upgraded.`,
+            `Plugin must be in 'ready', 'error', or 'upgrade_pending' status to be upgraded.`,
         );
       }
 
